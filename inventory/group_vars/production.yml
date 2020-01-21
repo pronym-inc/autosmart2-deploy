@@ -1,0 +1,9 @@
+---
+enable_runserver: false
+enable_notebook: false
+server_name: autosmart2.pronym.com
+listen_port: 443
+pronym_environment: production
+include_ssl_certs: false
+copy_ssl_certs: true
+copy_local_secrets: true

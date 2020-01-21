@@ -1,0 +1,206 @@
+---
+- hosts: all
+  roles:
+    - configure-server
+    - django-application
+    - nginx
+    - postgres
+    - supervisor
+  become: yes
+  vars:
+    copy_local_secrets: true
+    project_name: autosmart2
+    username: {{ app_username | default('autosmart2') }}
+    virtualenv_base: /webapps
+    virtualenv_dir: "{{ virtualenv_base }}/{{ project_name }}"
+    secrets_path: /etc/secrets.json
+    src_base: "{{ src_dir | default('/webapps/autosmart2/src/autosmart2') }}""
+    var_dir: "{{ virtualenv_dir }}/var"
+    log_dir: "{{ var_dir }}/log"
+    django_settings_module: "{{ project_name }}.conf.environments.{{ pronym_environment }}"
+    gunicorn_socket_path: "{{ var_dir }}/run/{{ project_name }}_socket"
+    server_config:
+      apt_dependencies:
+        - ansible
+        - yarn
+      apt_repos:
+        - key_url: https://dl.yarnpkg.com/debian/pubkey.gpg
+          repo_url: deb https://dl.yarnpkg.com/debian/ stable main
+      git_email: "{{ git_email | default('') }}"
+      git_name: "{{ git_name | default('') }}"
+      user: "{{ username }}"
+      vagrant_user_password: $1$SomeSalt$GeiX8X5vXsCoyilpMJP3A1
+      virtualenv_base: "{{ virtualenv_base }}"
+      src_dir: "{{ src_base }}"
+    django_app:
+      git_url: git@github.com:pronym-inc/autosmart2.git
+      gunicorn_log_dir: "{{ log_dir }}/gunicorn"
+      gunicorn_socket_path: "{{ gunicorn_socket_path }}"
+      project_name: "{{ project_name }}"
+      settings_module: "{{ django_settings_module }}"
+      src_base: "{{ src_base }}"
+      static_base: "{{ var_dir }}/static"
+      user: "{{ username }}"
+      admin_username: "{{ django_admin_username | default('admin') }}"
+      admin_password: "{{ django_admin_password | default('password123') }}"
+      virtualenv_dir: "{{ virtualenv_dir }}"
+      do_webpack_packaging: false
+      extra_directories:
+        - repo
+        - ssh
+    nginx:
+      copy_ssl_certs: "{{ copy_ssl_certs | default(False) }}"
+      create_self_signed_ssl: "{{ create_self_signed_ssl | default(False) }}"
+      log_dir: "{{ log_dir }}/nginx"
+      user: "{{ username }}"
+      sites:
+        - name: "{{ project_name }}"
+          server_name: "{{ server_name }}"
+          enable_ssl: "{{ include_ssl_certs | default(True) }}"
+          listen_port: "{{ listen_port }}"
+          socket_path: "{{ gunicorn_socket_path }}"
+          ssl_key_path: /etc/ssl/private/autosmart2.key
+          ssl_crt_path: /etc/ssl/certs/autosmart2.crt
+          static_paths:
+            - url: static
+              path: "{{ var_dir }}"
+            - url: packagedjs
+              path: "{{ var_dir }}" 
+    postgres:
+      secrets_key_prefix: default_db
+    supervisor:
+      conf_dir: "{{ virtualenv_dir }}/etc/supervisor"
+      environment: PYTHONPATH={{ src_base }},DJANGO_SETTINGS_MODULE={{ django_settings_module }},PRONYM_ENVIRONMENT={{ pronym_environment }}
+      log_dir: "{{ log_dir }}/supervisor"
+      run_dir: "{{ var_dir }}/run"
+      service_path: /etc/systemd/system
+      user: "{{ username }}"
+      processes:
+        - name: gunicorn
+          command: "{{ virtualenv_dir }}/bin/gunicorn -c {{ virtualenv_dir }}/etc/gunicorn.conf.py {{ project_name }}.conf.wsgi.app"
+        - name: celery
+          command: "{{ virtualenv_dir }}/bin/celery -A {{ project_name }} worker -l info"
+        - name: celery_beat
+          command: "{{ virtualenv_dir }}/bin/celery -A {{ project_name }} beat --pidfile {{ var_dir }}/run/celerybeat.pid --schedule {{ var_dir }}/run/celerybeat.schedule"
+      vagrant_processes:
+        - name: notebook
+          command: "{{ virtualenv_dir }}/bin/python {{ virtualenv_dir }}/bin/manage.py shell_plus --notebook"
+          directory: "{{ var_dir }}/notebooks"
+        - name: runserver
+          command: "{{ virtualenv_dir }}/bin/python {{ virtualenv_dir }}/bin/manage.py runserver 0.0.0.0:{{ runserver_port | default(8000) }}"
+
+  tasks:
+    - name: copy local secrets
+      copy:
+        src: secrets.json
+        dest: "{{ secrets_path }}"
+      when: copy_local_secrets
+      tags:
+        - always
+    - include_vars:
+        file: secrets.json
+        name: secrets
+      tags:
+        - always
+    - name: system setup
+      include_role:
+        name: configure-server
+        tasks_from: initial
+        apply:
+          tags:
+            - initial
+            - initial-vagrant
+      tags:
+        - initial
+        - initial-vagrant
+    - name: vagrant system setup
+      include_role:
+        name: configure-server
+        tasks_from: vagrant
+        apply:
+          tags:
+            - initial-vagrant
+      tags:
+        - initial-vagrant
+    - name: real system setup
+      include_role:
+        name: configure-server
+        tasks_from: real
+        apply:
+          tags:
+            - initial
+      tags:
+        - initial
+    - name: DB setup
+      include_role:
+        name: postgres
+        tasks_from: install
+        apply:
+          tags:
+            - initial
+            - initial-vagrant
+      tags:
+        - initial
+        - initial-vagrant
+    - include_role:
+        name: django-application
+        tasks_from: install
+        apply:
+          tags:
+            - initial
+            - initial-vagrant
+      tags:
+        - initial
+        - initial-vagrant
+    - include_role:
+        name: django-application
+        tasks_from: vagrant
+        apply:
+          tags:
+            - initial-vagrant
+      tags:
+        - initial-vagrant
+    - include_role:
+        name: supervisor
+        tasks_from: install
+        apply:
+          tags:
+            - initial
+            - initial-vagrant
+      tags:
+        - initial
+        - initial-vagrant
+    - include_role:
+        name: supervisor
+        tasks_from: vagrant
+        apply:
+          tags:
+            - initial-vagrant
+      tags:
+        - initial-vagrant
+    - include_role:
+        name: nginx
+        tasks_from: install
+        apply:
+          tags:
+            - initial
+            - initial-vagrant
+      tags:
+        - initial
+        - initial-vagrant
+    - include_role:
+        name: django-application
+        tasks_from: update
+        apply:
+          tags:
+            - update
+      tags:
+        - update
+    - include_role:
+        name: supervisor
+        tasks_from: update
+        apply:
+          tags:
+            - update
+      tags:
+        - update
